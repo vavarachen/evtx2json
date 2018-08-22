@@ -1,0 +1,3 @@
+splunk_hec_handler
+xmljson
+python-evtx
