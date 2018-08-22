@@ -4,6 +4,7 @@ A tool to convert Windows evtx (Event log export) files into JSON format and log
 # installation
 ```
 git clone https://github.com/vavarachen/evtx2json
+pip install --user --requirement requirements.txt
 ```
 
 # Usage
