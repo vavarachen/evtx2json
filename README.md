@@ -16,3 +16,5 @@ Process multiple files
 ```
 python evtx2json /path/to/evtx/files
 ```
+
+![Splunk Output Example](https://github.com/vavarachen/evtx2json/blob/master/resources/example1.png)
