@@ -27,10 +27,10 @@ logger.addHandler(stream_handler)
 
 # If using self-signed certificate, set ssl_verify to False
 # If using http, set proto to http
-token = "B0BD389E-3421-4405-83DE-59A205EAEB0B"
-splunk_handler = SplunkHecHandler('sandbox.abbvienet.com',
-                                 token, index='req0831821',
-                                 port=8080, proto='https', ssl_verify=True,
+token = "EA33046C-6FEC-4DC0-AC66-4326E58B54C3"
+splunk_handler = SplunkHecHandler('splunkfw.domain.tld',
+                                 token, index='evtx2json',
+                                 port=8888, proto='https', ssl_verify=True,
                                  source="evtx2json", sourcetype='_json')
 logger.addHandler(splunk_handler)
 
