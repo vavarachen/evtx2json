@@ -18,7 +18,7 @@ import time
 from glob import glob
 import argparse
 
-logger = logging.getLogger('SplunkHecHandlerExample')
+logger = logging.getLogger('evtx2json')
 logger.setLevel(logging.DEBUG)
 
 stream_handler = logging.StreamHandler()
@@ -36,6 +36,8 @@ logger.addHandler(splunk_handler)
 
 # Additional fields for Splunk indexing
 fields = dict({})
+
+global event_counter, error_counter
 
 
 def remove_namespace(tree):
@@ -77,15 +79,20 @@ def iter_evtx2xml(evtx_file):
     :param evtx_file: file path string
     :return: generator to xml string representation of evtx event
     """
-    error_count = 0
+    global error_counter, event_counter
+    error_counter = 0
+    event_counter = 0
     try:
         with evtx.Evtx(evtx_file) as log:
             # process each log entry and return xml representation
             for record in log.records():
-                yield record.xml()
+                event_counter += 1
+                try:
+                    yield record.xml()
+                except Exception as err:
+                    error_counter += 1
+                    logger.error("Failed to convert EVTX to XML for %s. Error count: %d" % (evtx_file, error_counter))
     except Exception as err:
-        error_count += 1
-        logger.error("Failed to convert EVTX to XML for %s. Error count: %d" % (evtx_file, error_count))
         raise
 
 
@@ -191,40 +198,40 @@ if __name__ == "__main__":
               % (sys.argv[0], sys.argv[0]))
         sys.exit(-1)
 
+    start_time = int(time.time())
     if sys.argv[1].endswith(".evtx"):
         # argument is a single evtx file
-        event_counter = 0
+        logger.debug("Now processing %s" % sys.argv[1])
         success_counter = 0
-        fail_counter = 0
-        try:
-            for xml_str in iter_evtx2xml(sys.argv[1]):
-                event_counter += 1
+        for xml_str in iter_evtx2xml(sys.argv[1]):
+            try:
                 output = splunkify(xml2json(xml_str))
-        except Exception:
-            fail_counter += 1
-        else:
-            logger.info(json.loads(json.dumps(output['Event'])))
-            success_counter += 1
-        print("%s: Total: %d, Success: %d, Fail: %d" % (sys.argv[1], event_counter, success_counter, fail_counter))
+            except Exception:
+                error_counter += 1
+            else:
+                logger.info(json.loads(json.dumps(output['Event'])))
+                success_counter += 1
+
+        delta_secs = (int(time.time()) - start_time)
+        logger.info({'file': sys.argv[1], 'total_events': event_counter, 'pass': success_counter,
+                        'fail': error_counter, 'time': start_time, 'elapsed_sec': delta_secs})
     else:
         # argument is a path to folder containing evtx files
         for evtx_file in glob(os.path.join(sys.argv[1], "*.evtx")):
             logger.debug("Now processing %s" % evtx_file)
-            event_counter = 0
             success_counter = 0
-            fail_counter = 0
             for xml_str in iter_evtx2xml(evtx_file):
                 try:
-                    event_counter += 1
                     output = splunkify(xml2json(xml_str), evtx_file)
                     logger.info(json.loads(json.dumps(output['Event'])))
-                    success_counter += 1
                 except Exception:
-                    fail_counter += 1
+                    # Update global error counter
+                    error_counter += 1
                 else:
-                    if event_counter > 1000:
-                        logger.debug("Processed %d events for %s" % (event_counter, evtx_file))
-                        break
-            print("%s: Total: %d, Success: %d, Fail: %d" % (evtx_file, event_counter, success_counter, fail_counter))
+                    success_counter += 1
+
+                delta_secs = (int(time.time()) - start_time)
+                logger.info({'file': sys.argv[1], 'total_events': event_counter, 'pass': success_counter,
+                             'fail': error_counter, 'time': start_time, 'elapsed_sec': delta_secs})
 
 
