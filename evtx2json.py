@@ -1,15 +1,25 @@
 """
 Script to convert evtx_dump.py XML output (https://github.com/williballenthin/python-evtx)
-to JSON and push to Splunk via HTTP Event Collector (pip install splunk-hec-handler)
+to JSON and optionally, push events to Splunk via HTTP Event Collector (pip install splunk-hec-handler)
 
-evtx2json.py <folder with evtx files>
-evtx2json.py <single evtx file>
+Process file(s)
+    evtx2json.py process_files --files file1.evtx file2.evtx folder/*.evtx
+
+Process folder
+    evtx2json.py process_folder --folder evtx_folder
+
+Enable logging to Splunk
+    evtx2json.py --splunk --host splunkfw.domain.tld --port 8888 --token BEA33046C-6FEC-4DC0-AC66-4326E58B54C3 \
+        process_files -f samples/*.evtx
+
+Enable logging to Splunk but disable JSON modifications
+    evtx2json.py --splunk --host splunkfw.domain.tld --port 8888 --token BEA33046C-6FEC-4DC0-AC66-4326E58B54C3 \
+        --disable_json_tweaks process_files -f samples/*.evtx
 
 """
 import os.path
 import sys
 import logging
-from splunk_hec_handler import SplunkHecHandler
 from xmljson import badgerfish as bf
 import json
 import xml.etree.ElementTree as ET
@@ -22,22 +32,49 @@ logger = logging.getLogger('evtx2json')
 logger.setLevel(logging.DEBUG)
 
 stream_handler = logging.StreamHandler()
-stream_handler.level = logging.WARNING
+stream_handler.level = logging.INFO
+formatter = logging.Formatter(fmt='%(asctime)s [%(name)10s] %(levelname)s %(message)s', datefmt='%m/%d/%y %I:%M:%S %p')
+stream_handler.formatter = formatter
 logger.addHandler(stream_handler)
-
-# If using self-signed certificate, set ssl_verify to False
-# If using http, set proto to http
-token = "EA33046C-6FEC-4DC0-AC66-4326E58B54C3"
-splunk_handler = SplunkHecHandler('splunkfw.domain.tld',
-                                 token, index='evtx2json',
-                                 port=8888, proto='https', ssl_verify=True,
-                                 source="evtx2json", sourcetype='_json')
-logger.addHandler(splunk_handler)
 
 # Additional fields for Splunk indexing
 fields = dict({})
 
 global event_counter, error_counter
+
+
+def add_splunk_handler(args):
+    """
+    Add remote Splunk HEC logging handler to logger
+    :param args:  argparse Namespace containing values to configure Splunk handler.  Host and Token required.
+    :return: None.  Adds splunk log handler to loger.
+    """
+    if args.splunk:
+        try:
+            from splunk_hec_handler import SplunkHecHandler
+        except ModuleNotFoundError as err:
+            logger.warning("Filed to import 'splunk_hec_handler' python module.  Try 'pip install splunk_hec_handler'")
+            pass
+        except Exception as err:
+            logger.warning("Error encountered adding Splunk logging handler.  Error: %s" % err)
+            pass
+        else:
+            if not args.verify:
+                try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                except ModuleNotFoundError as err:
+                    logger.debug("Failed to suppress SSL warnings")
+
+            logger.debug("Configuring Splunk handler: host: %s, port: %d, proto: %s, ssl_veriy: %s, token: %s, source: %s, sourcetype: %s"
+                         % (args.host, args.port, args.proto, args.verify, args.token, args.source, args.sourcetype))
+
+            splunk_handler = SplunkHecHandler(args.host,
+                                              args.token, index=args.index,
+                                              port=args.port, proto=args.proto, ssl_verify=args.verify,
+                                              source=args.source, sourcetype=args.sourcetype)
+            splunk_handler.setLevel(logging.getLevelName(args.loglevel))
+            logger.addHandler(splunk_handler)
 
 
 def remove_namespace(tree):
@@ -141,7 +178,7 @@ def _transform_eventdata(output):
         return output
 
 
-def splunkify(output, source=sys.argv[1], transform=True):
+def splunkify(output, source=sys.argv[1]):
     """
     Any customization to the final splunk output goes here
     :param output: JSON obj returned by xml2json
@@ -149,11 +186,8 @@ def splunkify(output, source=sys.argv[1], transform=True):
     :return: JSON obj with Splunk customizations
     """
 
-    if transform:
-        event = _transform_system(output)
-        event = _transform_eventdata(event)
-    else:
-        event = output
+    event = _transform_system(output)
+    event = _transform_eventdata(event)
 
     # Custom fields for Splunk processing
     event['Event']['fields'] = {}
@@ -177,61 +211,99 @@ def splunkify(output, source=sys.argv[1], transform=True):
 
     # Set host field to Computer names in the evtx event
     try:
-        if transform:
-            _host = event['Event']['System']['Computer']
-        else:
-            _host = event['Event']['System']['Computer']['$']
+        _host = event['Event']['System']['Computer']
     except KeyError:
         logger.warning("Event missing Computer field")
     else:
         event['Event']['fields']['host'] = _host
 
     # Set source field to name of the evtx file
-    event['Event']['fields']['source'] = source
+    event['Event']['fields']['source'] = os.path.basename(source)
 
     return event
 
 
-if __name__ == "__main__":
-    if len(sys.argv) == 1 or len(sys.argv) > 2:
-        print("Usage:\n\t%s /path/to/file.evtx \n\t %s /folder/containing/evtxfiles"
-              % (sys.argv[0], sys.argv[0]))
-        sys.exit(-1)
+def output_stats(evtx_file, success_counter, start_time):
+    """ Log basic stats per evtx file """
+    global event_counter, error_counter
+    delta_secs = (int(time.time()) - start_time)
 
+    logger.info({'file': evtx_file, 'total_events': event_counter, 'pass': success_counter,
+                 'fail': error_counter, 'time': start_time, 'elapsed_sec': delta_secs})
+
+
+def process_files(args):
+    """
+    Each evtx file is first converted to xml using python-evtx module
+    Next, the xml output is converted to JSON using xmljson (badgerfish)
+    Finally, the JSON output is customized, unless --disable_json_tweaks is specified as a flag
+    If --splunk flag is specified, events are logged to the specified Splunk host (--host)
+    """
+    if args.splunk:
+        add_splunk_handler(args)
+
+    global error_counter
     start_time = int(time.time())
-    if sys.argv[1].endswith(".evtx"):
-        # argument is a single evtx file
-        logger.debug("Now processing %s" % sys.argv[1])
-        success_counter = 0
-        for xml_str in iter_evtx2xml(sys.argv[1]):
-            try:
-                output = splunkify(xml2json(xml_str))
-            except Exception:
-                error_counter += 1
-            else:
-                logger.info(json.loads(json.dumps(output['Event'])))
-                success_counter += 1
-
-        delta_secs = (int(time.time()) - start_time)
-        logger.info({'file': sys.argv[1], 'total_events': event_counter, 'pass': success_counter,
-                        'fail': error_counter, 'time': start_time, 'elapsed_sec': delta_secs})
-    else:
-        # argument is a path to folder containing evtx files
-        for evtx_file in glob(os.path.join(sys.argv[1], "*.evtx")):
+    for evtx_file in args.files:
+        if evtx_file.endswith(".evtx"):
             logger.debug("Now processing %s" % evtx_file)
             success_counter = 0
             for xml_str in iter_evtx2xml(evtx_file):
                 try:
-                    output = splunkify(xml2json(xml_str), evtx_file)
-                    logger.info(json.loads(json.dumps(output['Event'])))
+                    if args.disable_json_tweaks:
+                        output = xml2json(xml_str)
+                    else:
+                        output = splunkify(xml2json(xml_str), evtx_file)
                 except Exception:
-                    # Update global error counter
                     error_counter += 1
                 else:
+                    logger.info(json.loads(json.dumps(output['Event'])))
                     success_counter += 1
 
-                delta_secs = (int(time.time()) - start_time)
-                logger.info({'file': sys.argv[1], 'total_events': event_counter, 'pass': success_counter,
-                             'fail': error_counter, 'time': start_time, 'elapsed_sec': delta_secs})
+            output_stats(evtx_file, success_counter, start_time)
 
 
+def process_folder(args):
+    files = glob(os.path.join(args.folder, "*.evtx"))
+    args.__setattr__('files', files)
+    process_files(args)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(add_help=False, description="Convert Windows evtx files to JSON")
+    parser.add_argument('--help', '-h', help="This help message.", action='help')
+    parser.add_argument('--loglevel', '-v', help="Log level", choices=[0, 10, 20, 30, 40, 50], default=20, type=int)
+    parser.add_argument('--disable_json_tweaks', help="Skip customization to time, host, source etc. json fields",
+                        required=False, default=False, action='store_true')
+    subparsers = parser.add_subparsers()
+
+    splunk_parser_group = parser.add_argument_group(title="Splunk Integration", description="Send JSON output to Splunk")
+    splunk_parser_group.add_argument('--splunk', help="Send JSON output to Splunk",
+                                     required=False, default=False, action='store_true')
+    splunk_parser_group.add_argument('--host', help="Splunk host with HEC listener", default="localhost")
+    splunk_parser_group.add_argument('--token', help="HEC Token")
+    splunk_parser_group.add_argument('--port', help="Splunk HEC listener port", type=int, required=False, default=8008)
+    splunk_parser_group.add_argument('--proto', help="Splunk HEC protocol", default='https', required=False, choices=['http', 'https'])
+    splunk_parser_group.add_argument('--index', help="Splunk Index", required=False)
+    splunk_parser_group.add_argument('--source', help="Event Source.  NOTE: Computer name in evtx will overwrite this value", default=os.path.basename(sys.argv[0]), required=False)
+    splunk_parser_group.add_argument('--sourcetype', help="Event Sourcetype", default='_json', required=False)
+    splunk_parser_group.add_argument('--verify', help="SSL certificate verification", default=False, required=False, action='store_true')
+
+    # Parser for single evtx file
+    parser_fh = subparsers.add_parser('process_files')
+    fh_parser_group = parser_fh.add_argument_group(title="Process evtx files")
+    fh_parser_group.add_argument('--files', '-f', help="evtx file", nargs='+', required=True)
+    fh_parser_group.set_defaults(func=process_files)
+
+    # Parser for folder containing evtx files
+    parser_fh = subparsers.add_parser('process_folder')
+    folder_parser_group = parser_fh.add_argument_group(title="Process folder containing evtx files")
+    folder_parser_group.add_argument('--folder', help="Folder containing evtx files", required=True)
+    folder_parser_group.set_defaults(func=process_folder)
+
+    args = parser.parse_args()
+    try:
+        stream_handler.setLevel(logging.getLevelName(args.loglevel))
+        args.func(args)
+    except Exception as err:
+        print("Error: %s\n" % err)
+        parser.print_help()
