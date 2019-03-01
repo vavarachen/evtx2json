@@ -2,13 +2,13 @@
 A tool to convert Windows evtx files (Windows Event Log Files) into JSON format and log to Splunk (optional) using HTTP Event Collector.
 
 # installation
-```
+```console
 git clone https://github.com/vavarachen/evtx2json
 pip install --user --requirement requirements.txt
 ```
 
 # Help
-```
+```console
 $ python evtx2json.py -h
 usage: evtx2json.py [--help] [--loglevel {0,10,20,30,40,50}]
                     [--disable_json_tweaks] [--splunk] [--host HOST]
@@ -48,7 +48,7 @@ Splunk Integration:
 ```
 
 process_files module
-```
+```console
 $ python evtx2json.py process_files --help
 usage: evtx2json.py process_files [-h] --files FILES [FILES ...]
 
@@ -61,7 +61,7 @@ Process evtx files:
 ```
 
 process_folder module
-```
+```console
 $ python evtx2json.py process_folder -h
 usage: evtx2json.py process_folder [-h] --folder FOLDER
 
@@ -75,23 +75,23 @@ Process folder containing evtx files:
 
 # Usage
 Process evtx file(s)
-```
+```console
 python evtx2json.py process_files --files file1.evtx file2.evtx folder/*.evtx
 ```
 
 Process multiple evtx files in a folder
-```
+```console
 python evtx2json.py process_folder --folder /path/to/evtx_folder
 ```
 
 Enable logging to Splunk
-```
+```console
 python evtx2json.py --splunk --host splunkfw.domain.tld --port 8888 --token BEA33046C-6FEC-4DC0-AC66-4326E58B54C3 \
     process_files -f samples/*.evtx
 ```
 
 Enable logging to Splunk but disable JSON modifications
-```
+```console
 python evtx2json.py --splunk --host splunkfw.domain.tld --port 8888 --token BEA33046C-6FEC-4DC0-AC66-4326E58B54C3 \
     --disable_json_tweaks process_files -f samples/*.evtx
 ```
