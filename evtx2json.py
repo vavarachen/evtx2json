@@ -85,7 +85,7 @@ def remove_namespace(tree):
     :return: xml ElementTree Element with namespace removed
     """
     # Remove namespace
-    for element in tree.getiterator():
+    for element in tree.iter():
         try:
             if element.tag.startswith('{'):
                 element.tag = element.tag.split('}')[1]
